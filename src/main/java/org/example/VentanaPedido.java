@@ -30,16 +30,13 @@ public class VentanaPedido {
         stage.initModality(Modality.APPLICATION_MODAL);
         stage.setTitle("Pedido - " + mesa.getNombre());
 
-        // 1. OBTENER TAMAÑO DE PANTALLA
         Rectangle2D bounds = Screen.getPrimary().getVisualBounds();
-
-        // 2. CONFIGURAR VENTANA AL TAMAÑO DE LA PANTALLA
         stage.setX(bounds.getMinX());
         stage.setY(bounds.getMinY());
         stage.setWidth(bounds.getWidth());
         stage.setHeight(bounds.getHeight());
 
-        // --- IZQUIERDA: MENÚ ---
+        // --- IZQUIERDA ---
         TilePane menuPanel = new TilePane();
         menuPanel.setPadding(new Insets(15));
         menuPanel.setHgap(15);
@@ -50,13 +47,19 @@ public class VentanaPedido {
             Button btnProd = new Button(prod.getNombre() + "\n$" + prod.getPrecio());
             btnProd.setPrefSize(140, 100);
             btnProd.setStyle("-fx-background-color: #228be6; -fx-text-fill: white; -fx-font-weight: bold; -fx-font-size: 14px;");
-            btnProd.setOnAction(e -> cuentaItems.add(prod));
+
+            // ACCIÓN: Agregar a memoria Y a base de datos
+            btnProd.setOnAction(e -> {
+                cuentaItems.add(prod);
+                // NUEVO: Guardar persistencia
+                DatabaseHelper.guardarItemPendiente(mesa.getId(), prod);
+            });
             menuPanel.getChildren().add(btnProd);
         }
         ScrollPane scrollMenu = new ScrollPane(menuPanel);
         scrollMenu.setFitToWidth(true);
 
-        // --- DERECHA: CUENTA ---
+        // --- DERECHA ---
         VBox cuentaPanel = new VBox(10);
         cuentaPanel.setPadding(new Insets(15));
         cuentaPanel.setPrefWidth(400);
@@ -94,10 +97,7 @@ public class VentanaPedido {
         btnCerrarMesa.setPrefHeight(50);
         btnCerrarMesa.setOnAction(e -> cerrarMesa(stage));
 
-        cuentaPanel.getChildren().addAll(
-                btnVolver, new Separator(), tituloMesa, listaVisual, btnQuitar, lblTotal,
-                new Separator(), btnCocina, btnCerrarMesa
-        );
+        cuentaPanel.getChildren().addAll(btnVolver, new Separator(), tituloMesa, listaVisual, btnQuitar, lblTotal, new Separator(), btnCocina, btnCerrarMesa);
 
         actualizarVista();
         cuentaItems.addListener((ListChangeListener<Producto>) c -> actualizarVista());
@@ -106,16 +106,11 @@ public class VentanaPedido {
         split.getItems().addAll(scrollMenu, cuentaPanel);
         split.setDividerPositions(0.70);
 
-        // 3. CREAR ESCENA
         Scene scene = new Scene(split, bounds.getWidth(), bounds.getHeight());
         stage.setScene(scene);
-
-        // ACTIVAR PANTALLA COMPLETA/ <<---- FULLSCREEN REAL
-        stage.setMaximized(true);       // <<---- OPCIONAL para asegurar
-
+        stage.setMaximized(true);
         stage.showAndWait();
     }
-
 
     private void actualizarVista() {
         listaVisual.getItems().clear();
@@ -129,28 +124,42 @@ public class VentanaPedido {
 
     private void quitarProductoSeleccionado() {
         int index = listaVisual.getSelectionModel().getSelectedIndex();
-        if (index >= 0) cuentaItems.remove(index);
+        if (index >= 0) {
+            Producto p = cuentaItems.get(index);
+            // NUEVO: Eliminar de DB primero
+            DatabaseHelper.eliminarItemPendiente(mesa.getId(), p);
+            // Luego de memoria
+            cuentaItems.remove(index);
+        }
     }
 
     private void enviarACocina() {
         if (cuentaItems.isEmpty()) return;
         Map<String, Integer> conteo = new HashMap<>();
-        for (Producto p : cuentaItems) {
-            conteo.put(p.getNombre(), conteo.getOrDefault(p.getNombre(), 0) + 1);
-        }
-        StringBuilder ticket = new StringBuilder();
-        ticket.append("--- PEDIDO COCINA ---\n Mesa: ").append(mesa.getNombre()).append("\n---------------------\n");
-        for (Map.Entry<String, Integer> entry : conteo.entrySet()) {
-            ticket.append(entry.getValue()).append(" x ").append(entry.getKey()).append("\n");
-        }
-        Alert alert = new Alert(Alert.AlertType.INFORMATION, ticket.toString());
-        alert.showAndWait();
+        for (Producto p : cuentaItems) conteo.put(p.getNombre(), conteo.getOrDefault(p.getNombre(), 0) + 1);
+        Impresora.imprimirComandaCocina(mesa.getNombre(), conteo);
+        Alert alert = new Alert(Alert.AlertType.INFORMATION, "Enviado a impresora de cocina.");
+        alert.show();
     }
 
     private void cerrarMesa(Stage stage) {
+        if (cuentaItems.isEmpty()) { stage.close(); return; }
+
+        double total = 0;
+        Map<String, Integer> conteo = new HashMap<>();
+        for (Producto p : cuentaItems) {
+            total += p.getPrecio();
+            conteo.put(p.getNombre(), conteo.getOrDefault(p.getNombre(), 0) + 1);
+        }
+        Impresora.imprimirBoleta(mesa.getNombre(), cuentaItems, total);
+        DatabaseHelper.registrarVenta(mesa.getNombre(), conteo, total);
+
+        // NUEVO: Limpiar la tabla persistente también
+        DatabaseHelper.limpiarPendientesMesa(mesa.getId());
+
         GestorPedidos.limpiarMesa(mesa.getId());
         stage.close();
-        Alert alert = new Alert(Alert.AlertType.INFORMATION, "Mesa cerrada y cobrada.");
+        Alert alert = new Alert(Alert.AlertType.INFORMATION, "Mesa cobrada y registrada.");
         alert.showAndWait();
     }
 }
